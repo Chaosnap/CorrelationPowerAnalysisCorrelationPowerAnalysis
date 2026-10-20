@@ -1,56 +1,139 @@
-# CorrelationPowerAnalysis
-Implementation of a side-channel attack using Correlation Power Analysis with Python 
+# ML-KEM-768 PWM / BaseMul CPA (experimental)
 
-## Execute the program as a standalone executable:
+This branch **replaces the original AES S-box byte CPA** with a register-aware
+**Hamming Distance (HD) Pearson CPA** prototype for **ML-KEM-768 polynomial
+BaseMul / PWM**. It provides a Tkinter GUI, a CLI and regression tests.
 
-The python program is build into a standalone executable which is built and tested on the Microsoft Windows 10 platform. There is no requirement to install any other packages in order to run the executable.
+**Status: research prototype, not yet validated against Artix-7 RTL traces.**
+The core computes *canonical* BaseMul values; real hardware may use
+Montgomery/Barrett intermediate representations, signed arithmetic, or a
+register storing a different intermediate. Do not claim hardware key recovery
+without mapping the predicted value and previous register value to RTL.
 
-### How to use the executable:
+## Install
 
-1. Ensure that the demo waveform file (waveform374samples_327_2047.csv) and the executable file (Main.exe) are in the same directory.
+Python 3.10+ recommended.
 
-2. Double click the "Main.exe" executable.
+```sh
+python -m pip install -r requirements.txt
+python GUI.py
+```
 
-3. A terminal will pop up. Please do give it some time to load all the libraries at the back end. It should take around 15 seconds.
+Or run without a desktop:
 
-4. A user interface will be shown as below:
+```sh
+python Main.py --dataset your_run.h5 --guess s0 --fixed-other 100 \
+  --component r0 --start 1000 --stop 2000 --plot
+```
 
-<img src="https://raw.githubusercontent.com/laiqinghui/CorrelationPowerAnalysis/master/media/InitUI.png" alt="alt text" width="100%" height="400">
-    
-5. The program will now ask for the name of the CSV file that contain the traces. Users may choose to analysis their own set of traces by placing the their own trace file in the same directory as the executable file and provide the name of their own waveform files. However, for this demo, please press enter to proceed with the demo waveform file as that file contains the traces collected during the lab experiment.
+`--fixed-other 100` is a **known** other secret coefficient, not a guess
+that can be silently assumed. It is useful for an initial known-key lab
+experiment. It does **not** represent unconstrained recovery of both BaseMul
+secret coefficients.
 
-6. The program will now ask for the start index of the trace file which data will start to be used for processing. Users may also indicate the start of the index of their own waveform files. However, for this demo, please press enter to proceed with the setting for the default waveform file.
+For an explicitly selected joint candidate list, provide an M-by-2 NumPy
+array or CSV:
 
-7. The program will now ask for the end index of the trace file which data are stop to be considered for processing. Users may also indicate the end of the index of their own waveform files. However, for this demo, please press enter to proceed with the setting for the default waveform file.
+```sh
+python Main.py --dataset your_run.h5 --candidates selected_pairs.npy \
+  --component r0 --plot
+```
 
-8. The program will now ask for the maximum number of traces that will be use for processing (Processing will start from 10 to this specified amount in steps of 10). Users may also indicate the maximum number of traces to be used for analysis in their own waveform files. However, for this demo, please press enter to use all traces available in the trace file.
+Joint brute force over all pairs would require `3329^2 = 11,082,241`
+candidates and may be expensive. The tool ranks **only the supplied
+candidate set**.
 
-9. The program will start the processing of data. The sample output of the program will be as such:
+## Synthetic smoke test (NOT hardware evidence)
 
-<img src="https://raw.githubusercontent.com/laiqinghui/CorrelationPowerAnalysis/master/media/results.png" alt="alt text" width="100%" height="400">
+```sh
+python -m examples.make_demo
+python Main.py --dataset synthetic_demo.h5 --guess s0 --fixed-other 782 \\
+  --component r0 --true-pair 231 782 --plot
+```
 
-Two plots will be produced as well. The details of the results and plots will be discussed in the accompanying report.
+Or select `synthetic_demo.h5` in `python GUI.py`, leave Candidate file blank,
+set Guess to `s0`, Known other coefficient to `782`, and Component to `r0`.
+A visible **SYNTHETIC DEMO** warning identifies the generated data.
+The example does not use valid ML-KEM ciphertexts and is not research evidence.
 
-<img src="https://raw.githubusercontent.com/laiqinghui/CorrelationPowerAnalysis/master/media/plot1.png" alt="alt text" width="100%" height="500">
+## HDF5 input contract
 
-<img src="https://raw.githubusercontent.com/laiqinghui/CorrelationPowerAnalysis/master/media/plot2.png" alt="alt text" width="100%" height="500">
+A single file needs the following datasets (first dimension: same N traces):
 
-## Execute the program from source:
+| Name | Shape | Meaning |
+| --- | --- | --- |
+| `/traces` | `(N, T)` | Aligned measured power/EM samples |
+| `/ciphertexts` | `(N, 1088)` | Original ML-KEM-768 ciphertext, row aligned with traces |
+| `/ntt_u0` | `(N,)` | First NTT-domain public operand for ONE chosen BaseMul pair |
+| `/ntt_u1` | `(N,)` | Second NTT-domain public operand for the same pair |
+| `/previous_register` | `(N,)` | Actual *previous* register state (known/verified), **not inferred as zero** |
+| `/zeta` (optional) | `(N,)` | BaseMul twiddle factor; alternatively root attribute `zeta` or `--zeta` |
 
-The project is built with Python 3.7.1 with Anaconda as the package manager.
+**Important:** The HDF5 loader does **not** derive `ntt_u0/u1` from
+ciphertext bytes. Precompute those operands with a **verified FIPS 203 /
+actual RTL** decode/decompress/NTT pipeline, and preserve the original
+ciphertexts for provenance. ML-KEM-768 ciphertexts are 1088 bytes.
 
-Dependencies for this project:
-1) Numpy
-2) Pandas
-2) Matplotlib
+For `r0` mode, use the correct zeta for the selected coefficient pair.
+The `r1` and `mul` components do not require zeta.
 
-### Steps to execute the program from source:
+Sampling rate, trigger index, core frequency, bitstream hash and probe
+position should be recorded as HDF5 attributes (not yet enforced by the
+loader). Crop a physically identified PWM window using `--start` and
+`--stop`; these are **zero-based sample positions**, with stop exclusive.
 
-1) Install Anaconda 3.7 or install Python 3.7.1 along with the necessary packages required as stated above.
-2) Clone this repository
-3) Execute the python script by opening cmd in Windows or terminal in Linux and keying in:
+## Leakage model
 
-    cd 'root directory of the repo'
+For each trace i and candidate secret pair (s0, s1), the canonical
+ML-KEM BaseMul output candidates are:
 
-    python Main.py
+```text
+r0 = (u0*s0 + zeta*u1*s1) mod 3329
+r1 = (u0*s1 + u1*s0) mod 3329
+```
 
+An optional `mul = u0*s0 mod 3329` diagnostic mode should be used ONLY
+when the targeted RTL register actually stores this product.
+
+```text
+L_i(s0,s1) = bit_count(previous_register[i] XOR predicted_register[i])
+```
+
+Both values are masked to the configured `--word-bits` (default 16).
+The CPA computes Pearson correlation of the hypothesis for every
+candidate against every sampled time index in the cropped trace window.
+Outputs: **peak absolute correlation**, **candidate rank**, best sample,
+and optionally **ground-truth rank** (when known lab secrets are given).
+
+The prior register value must be known/established. If it is itself
+candidate-dependent, the simple model here is **not valid**; implement
+the full previous-state hypothesis from RTL instead.
+
+Successful ranking within a limited candidate set is **not** full
+ML-KEM decapsulation-key recovery, and a CPA correlation peak alone
+is not proof of key recovery.
+
+## Test
+
+```sh
+python -m unittest discover -s tests -v
+```
+
+The tests use synthetic traces with a deliberately injected
+HD-correlated signal; they **do not** establish real-device exploitability.
+
+## External code studied (not copied verbatim)
+
+- [anshupriyan/My-CPA-code-analysis](https://github.com/anshupriyan/My-CPA-code-analysis)
+  — per-coefficient hypotheses, vectorized correlation, window searches (MIT).
+- [Chaman-veteran/KyberCPA](https://github.com/Chaman-veteran/KyberCPA)
+  — real capture/known-input association, statistical analysis of Kyber on
+  Cortex-M4. ARM instruction models are **not** used for this FPGA prototype.
+- [PRASANNA-RAVI/Generic-SCA-CCA-Lattice-Schemes](https://github.com/PRASANNA-RAVI/Generic-SCA-CCA-Lattice-Schemes)
+  — chosen ciphertexts, leakage-oriented PoI and clustering/template attacks;
+  **not** a drop-in Pearson-CPA implementation.
+
+The original repository implemented **AES-S-box-based CPA** and used
+`CPA.py`, `Main.py`, and `ToolBox.py`. Historical waveforms and
+`ToolBox.py` remain for reference; the new `Main.py` and `GUI.py` do
+not use AES S-box predictions.

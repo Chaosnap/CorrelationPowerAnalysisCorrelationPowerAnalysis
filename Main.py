@@ -1,179 +1,166 @@
-import sys, getopt, math
+"""Command-line entry point for ML-KEM-768 PWM/BaseMul HD-CPA.
+
+Use python GUI.py for the optional desktop GUI.
+"""
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
 import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-from CPA import CPA
+from CPA import CPA, Q
 
 
-def main(argv):
+def load_dataset(path, start=None, stop=None, max_traces=None):
+    """Load real traces + corresponding ciphertext and NTT operands from HDF5.
 
-    # inputfilename, startpt, endpt = getInputsArgv(argv)
-    inputfilename, startpt, endpt, numTraces = getInputs()
-    print("Processing ", inputfilename, "...")
-    print()
-    pt, ct, tracesPoints = processCSV(inputfilename, startpt, endpt)
-    if numTraces == -1:
-        VisualizeTracesDifferences(pt, ct, tracesPoints)
-    else:
-        VisualizeTracesDifferences(pt, ct, tracesPoints[:numTraces])
-
-
-def VisualizeCorrSingle(matrixRelations, byteNo):
-
-    matrixRelation = matrixRelations[byteNo]
-    fig, axs = plt.subplots(1, 1)
-    axs.stem(matrixRelation)
-    axs.grid()
-    axs.stem([abs(matrixRelation).argmax()], [matrixRelation[abs(matrixRelation).argmax()]], linefmt="C1-",
-             markerfmt="C1o")
-
-    axs.set_xlabel('All possible sub-key guesses')
-    axs.set_ylabel('Correlation Value')
-    plt.title("Correlation plot for byte "+ str(byteNo))
-    plt.show()
-
-
-def VisualizeCorrAll(traceSets, matrixRelationMatList, keysize):
-
-    # Will be size of 16
-    ylistContainer = []
-
-    for m in matrixRelationMatList:
-        # ylist will have a shape of (256 by 20)
-        ylist = np.concatenate(m, axis=1)
-        ylistContainer.append(ylist)
-
-    # Plotting
-    numOfRowsPerFig = 4
-    numOfColPerFig = 4
-    numOfPlotsPerFig = numOfRowsPerFig * numOfColPerFig
-    numOfFigReq = math.ceil(keysize / numOfPlotsPerFig)
-    figures = np.empty(shape=numOfFigReq, dtype=object)
-    figIndex = 0
-    plotIndex = 1
-    figures[figIndex] = plt.figure()
-    figures[figIndex].subplots_adjust(hspace=0.7, wspace=0.7)
-
-    for index, ylist in enumerate(ylistContainer):
-
-        if plotIndex > numOfPlotsPerFig:
-            figIndex += 1
-            figures[figIndex] = plt.figure()
-            figures[figIndex].subplots_adjust(hspace=0.7, wspace=0.7)
-            plotIndex = 1
-        ax = figures[figIndex].add_subplot(numOfRowsPerFig, numOfColPerFig, plotIndex)
-        for y in ylist:
-            ax.plot(traceSets, y)
-        ax.set_title('Key byte ' + str(index))
-        ax.set_xlabel('No. of traces')
-        ax.set_ylabel('Correlation Value')
-        plotIndex += 1
-
-    plt.show()
-
-
-def VisualizeTracesDifferences(pt, ct, tracesPoints):
-
-    keysize = 16
-    # print("Range count", (math.floor(len(tracesPoints)/10)*10)+10)
-    traceSets = range(10, (math.floor(len(tracesPoints) / 10) * 10) + 10, 10)
-    cpaObjs = []
-    # Will contain temp 16 sets of 20 (256 by 1) matrices for concat
-    matrixRelationMatList = np.empty(shape=(keysize, len(traceSets)), dtype=object)
-
-    print("Starting CPA procedure with increasing number of traces now...")
-
-    for index1, tracesPointsLen in enumerate(traceSets):
-        print("Working with ", tracesPointsLen, " traces now...")
-        cpa = CPA(keysize)
-        # Set data points
-        cpa.SetTracesPointsAndPT(tracesPoints[:tracesPointsLen], pt[:tracesPointsLen])
-        # Do CPA
-        print("Doing Correlational Power Analysis...")
-        key = cpa.Analyse()
-        print("Key recovered with ", tracesPointsLen, " traces is ", [hex(k) + "|" + chr(k) for k in key])
-        # Size of 16
-        currentMatrixRelations = cpa.GetMatrixRelations()
-        # Populate matrix data for plotting later
-        for index2, eachByteRelation in enumerate(currentMatrixRelations):
-            # Tranpose from 1 x 256 to 256 x1
-            matrixRelationMatList[index2][index1] = (np.array(eachByteRelation).reshape(len(eachByteRelation), 1))
-
-        cpaObjs.append(cpa)
-
-    print("Plotting single sub-key byte correlation plot...")
-    VisualizeCorrSingle(cpaObjs[index1].GetMatrixRelations(), 0)
-    VisualizeCorrSingle(cpaObjs[index1].GetMatrixRelations(), 1)
-    print("Plotting all key bytes correlation plot...")
-    VisualizeCorrAll(traceSets, matrixRelationMatList, keysize)
-
-
-def getInputs():
-    defaultCSV = "waveform374samples_327_2047.csv"
-    defaultStart = 327
-    defaultEnd = 2047
-    defaultNumTraces = -1
-
-    print("Welcome to Power Analysis Tool!")
-    print("===============================")
-    print()
-    inputfilename = input(
-        "Please enter the name of the waveform file (Press <enter> to use default file): ") or defaultCSV
-    print("File chosen: ", inputfilename)
-    startpt = int(input("Please enter the start index (Press <enter> to use default start index): ") or defaultStart)
-    print("Start index: ", startpt)
-    endpt = int(input("Please enter the end index (Press <enter> to use default end index): ") or defaultEnd)
-    print("End index: ", endpt)
-    numTraces = int(input(
-        "Please enter the max no. of traces to be use for analysis.\nNo. of trace will start from 10 and end at this amount in steps of 10 (Press <enter> to use all traces available in the file): ") or defaultNumTraces)
-    print("No. of traces to use: ", numTraces if numTraces != -1 else 'All')
-    print()
-
-    return inputfilename, startpt, endpt, numTraces
-
-
-def getInputsArgv(argv):
-    if len(argv) < 3 and not ("-h" in argv):
-        print("Wrong command format!")
-        print("Please supply csv file and options. Use -h option for example command.")
-        sys.exit(2)
+    The NTT-domain operands must be PRECOMPUTED from each ciphertext using
+    the actual hardware decode/decompress/NTT conventions, then verified.
+    This loader intentionally does not pretend raw ciphertext bytes are u0/u1.
+    """
     try:
-        opts, args = getopt.getopt(argv, "hi:s:e:", ["ifile=", "startpt=", "endpt="])
-    except getopt.GetoptError:
-        print("Wrong command format!")
-        print("Use -h option for example command")
-        sys.exit(2)
-    for opt, arg in opts:
-        if opt == '-h':
-            print("eg: Main.py -i waveform.csv -s 327 -e 2046 ")
-            sys.exit(2)
-        elif opt in ("-i", "--ifile"):
-            inputfilename = arg
-        elif opt in ("-s", "--startpt"):
-            startpt = arg
-        elif opt in ("-e", "--endpt"):
-            endpt = arg
-    print("Input file is ", inputfilename)
+        import h5py
+    except ImportError as exc:
+        raise RuntimeError("Install h5py (pip install -r requirements.txt)") from exc
 
-    return inputfilename, int(startpt), int(endpt)
+    with h5py.File(path, "r") as f:
+        required = ("traces", "ciphertexts", "ntt_u0", "ntt_u1",
+                    "previous_register")
+        missing = [name for name in required if name not in f]
+        if missing:
+            raise ValueError("HDF5 missing required datasets: " + ", ".join(missing))
+        trace_ds = f["traces"]
+        if trace_ds.ndim != 2:
+            raise ValueError("/traces must be an N x T matrix")
+        n, total_samples = trace_ds.shape
+        if max_traces is not None:
+            if max_traces < 3:
+                raise ValueError("--max-traces must be at least 3")
+            n = min(n, max_traces)
+        first = 0 if start is None else start
+        last = total_samples if stop is None else stop
+        if first < 0 or last > total_samples or last - first < 3:
+            raise ValueError("Invalid sample window; need at least three samples")
+        traces = np.asarray(trace_ds[:n, first:last], dtype=np.float64)
+        ct = f["ciphertexts"]
+        if ct.ndim != 2 or ct.shape[0] < n or ct.shape[1] != 1088:
+            raise ValueError("/ciphertexts must contain N rows of 1088 bytes for ML-KEM-768")
+        # Verify that ciphertext rows and power trace rows remain aligned.
+        for label in ("ntt_u0", "ntt_u1", "previous_register"):
+            if f[label].shape != (trace_ds.shape[0],):
+                raise ValueError(f"/{label} must have exactly one value per trace")
+        u0 = np.asarray(f["ntt_u0"][:n], dtype=np.int64)
+        u1 = np.asarray(f["ntt_u1"][:n], dtype=np.int64)
+        prev = np.asarray(f["previous_register"][:n], dtype=np.int64)
+        synthetic = bool(f.attrs.get("synthetic", False))
+        zeta = None
+        if "zeta" in f:
+            zeta = np.asarray(f["zeta"][:n], dtype=np.int64)
+        elif "zeta" in f.attrs:
+            zeta = int(f.attrs["zeta"])
+    return traces, u0, u1, prev, zeta, first, synthetic
 
 
-def processCSV(filename, startpt, endpt):
-    # index start at 0 conversion
-    startpt -= 1
-    endpt -= 1
+def load_candidates(path=None, guess=None, fixed_other=None):
+    """Enumerate a conditional one-coefficient search or read explicit pairs.
 
-    dframe = pd.read_csv(filename, header=None)
-    dframe = dframe.dropna(axis=1, how='any')  # Cleanup data: Removes anything that's not a number
-    pt = dframe.iloc[:, 0:1]
-    ct = dframe.iloc[:, 1:2]
-    dataTraces = dframe.iloc[:, startpt + 1:endpt]
-    print("First 5 rows of processed data: ")
-    print(dataTraces.head())
-    print()
+    Conditional search requires the OTHER coefficient to be known; this is
+    a validation experiment, not an independent full two-coefficient recovery.
+    """
+    if path is not None:
+        p = Path(path)
+        pairs = (np.load(p, allow_pickle=False)
+                 if p.suffix.lower() == ".npy"
+                 else np.loadtxt(p, delimiter=",", dtype=np.int64))
+        return np.asarray(pairs, dtype=np.int64).reshape(-1, 2)
+    if guess is None or fixed_other is None:
+        raise ValueError("Supply --candidates OR --guess and --fixed-other")
+    if not 0 <= fixed_other < Q:
+        raise ValueError("fixed other coefficient must be in 0..3328")
+    values = np.arange(Q, dtype=np.int64)
+    fixed = np.full(Q, fixed_other, dtype=np.int64)
+    return (np.column_stack((values, fixed)) if guess == "s0"
+            else np.column_stack((fixed, values)))
 
-    return pt.values, ct.values, dataTraces.values
+
+def analyze_file(dataset, candidates_path=None, guess=None, fixed_other=None,
+                 component="r0", start=None, stop=None, max_traces=None,
+                 word_bits=16, zeta_override=None, true_pair=None):
+    traces, u0, u1, prev, zeta, sample_offset, synthetic = load_dataset(
+        dataset, start=start, stop=stop, max_traces=max_traces)
+    if zeta_override is not None:
+        zeta = zeta_override
+    candidates = load_candidates(candidates_path, guess, fixed_other)
+    model = CPA(word_bits=word_bits, component=component)
+    result = model.attack(
+        traces, u0, u1, prev, candidates, zeta=zeta, true_pair=true_pair)
+    result["best_sample_absolute"] = result["best_sample"] + sample_offset
+    result["trace_count"] = len(traces)
+    result["synthetic"] = synthetic
+    return result
+
+
+def plot_result(result):
+    import matplotlib.pyplot as plt
+    scores = result["peak_correlation"]
+    order = result["ranking"]
+    best_curve = result["correlation_matrix"][int(order[0])]
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+    axes[0].plot(np.arange(len(best_curve)), best_curve)
+    axes[0].axvline(result["best_sample"], linestyle="--", alpha=0.6)
+    axes[0].set(xlabel="Sample in cropped window",
+                ylabel="Pearson correlation",
+                title="Best candidate correlation curve")
+    axes[1].plot(np.arange(len(scores)), scores, linewidth=0.8)
+    axes[1].scatter([int(order[0])], [scores[int(order[0])]], zorder=3)
+    axes[1].set(xlabel="Candidate index", ylabel="Peak |correlation|",
+                title="Secret-pair candidate ranking")
+    for ax in axes:
+        ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    plt.show()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="HD Pearson CPA for one ML-KEM-768 PWM/BaseMul register.")
+    parser.add_argument("--dataset", required=True,
+                        help="HDF5 containing traces, ciphertexts, NTT operands and previous register state")
+    choice = parser.add_mutually_exclusive_group(required=True)
+    choice.add_argument("--candidates", help="M x 2 candidate pairs (.npy or CSV)")
+    choice.add_argument("--guess", choices=["s0", "s1"],
+                        help="Vary one secret coefficient; requires --fixed-other")
+    parser.add_argument("--fixed-other", type=int)
+    parser.add_argument("--component", choices=["r0", "r1", "mul"], default="r0")
+    parser.add_argument("--zeta", type=int, help="BaseMul zeta if not in HDF5")
+    parser.add_argument("--word-bits", type=int, default=16)
+    parser.add_argument("--start", type=int, help="First sample (0-based inclusive)")
+    parser.add_argument("--stop", type=int, help="Last sample (0-based exclusive)")
+    parser.add_argument("--max-traces", type=int)
+    parser.add_argument("--true-pair", type=int, nargs=2, metavar=("S0", "S1"),
+                        help="Optional laboratory ground truth for Key Rank")
+    parser.add_argument("--plot", action="store_true")
+    args = parser.parse_args()
+    result = analyze_file(
+        dataset=args.dataset, candidates_path=args.candidates,
+        guess=args.guess, fixed_other=args.fixed_other,
+        component=args.component, start=args.start, stop=args.stop,
+        max_traces=args.max_traces, word_bits=args.word_bits,
+        zeta_override=args.zeta, true_pair=args.true_pair)
+    if result["synthetic"]:
+        print("SYNTHETIC DATASET — not real FPGA key recovery")
+    print(f"HD-CPA on {result['trace_count']} traces, BaseMul {result['component']}")
+    print(f"Best pair: {result['best_pair']}; peak |rho|: {result['best_score']:.5f}; "
+          f"sample: {result['best_sample_absolute']}")
+    for rank, index in enumerate(result["ranking"][:10], 1):
+        print(f"  {rank:2d}. {tuple(map(int, result['candidate_pairs'][index]))}: "
+              f"|rho|={result['peak_correlation'][index]:.5f}")
+    if "true_pair_rank" in result:
+        print("Ground-truth rank:", result["true_pair_rank"])
+    print("NOTE: A maximum correlation is a candidate ranking, not proof of key recovery.")
+    if args.plot:
+        plot_result(result)
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    main()
