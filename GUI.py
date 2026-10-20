@@ -157,6 +157,7 @@ class App(tk.Tk):
         self.result = value
         self.plot_button.config(state="normal")
         self.status.set(
+            ("SYNTHETIC DEMO | " if value["synthetic"] else "Measured dataset | ") +
             f"{value['trace_count']} traces | best pair {value['best_pair']} | "
             f"peak |rho| {value['best_score']:.5f} at sample "
             f"{value['best_sample_absolute']} | "
