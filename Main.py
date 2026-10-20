@@ -52,12 +52,13 @@ def load_dataset(path, start=None, stop=None, max_traces=None):
         u0 = np.asarray(f["ntt_u0"][:n], dtype=np.int64)
         u1 = np.asarray(f["ntt_u1"][:n], dtype=np.int64)
         prev = np.asarray(f["previous_register"][:n], dtype=np.int64)
+        synthetic = bool(f.attrs.get("synthetic", False))
         zeta = None
         if "zeta" in f:
             zeta = np.asarray(f["zeta"][:n], dtype=np.int64)
         elif "zeta" in f.attrs:
             zeta = int(f.attrs["zeta"])
-    return traces, u0, u1, prev, zeta, first
+    return traces, u0, u1, prev, zeta, first, synthetic
 
 
 def load_candidates(path=None, guess=None, fixed_other=None):
@@ -85,7 +86,7 @@ def load_candidates(path=None, guess=None, fixed_other=None):
 def analyze_file(dataset, candidates_path=None, guess=None, fixed_other=None,
                  component="r0", start=None, stop=None, max_traces=None,
                  word_bits=16, zeta_override=None, true_pair=None):
-    traces, u0, u1, prev, zeta, sample_offset = load_dataset(
+    traces, u0, u1, prev, zeta, sample_offset, synthetic = load_dataset(
         dataset, start=start, stop=stop, max_traces=max_traces)
     if zeta_override is not None:
         zeta = zeta_override
@@ -95,6 +96,7 @@ def analyze_file(dataset, candidates_path=None, guess=None, fixed_other=None,
         traces, u0, u1, prev, candidates, zeta=zeta, true_pair=true_pair)
     result["best_sample_absolute"] = result["best_sample"] + sample_offset
     result["trace_count"] = len(traces)
+    result["synthetic"] = synthetic
     return result
 
 
