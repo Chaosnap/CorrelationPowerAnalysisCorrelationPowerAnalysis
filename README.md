@@ -43,6 +43,19 @@ Joint brute force over all pairs would require `3329^2 = 11,082,241`
 candidates and may be expensive. The tool ranks **only the supplied
 candidate set**.
 
+## Synthetic smoke test (NOT hardware evidence)
+
+```sh
+python -m examples.make_demo
+python Main.py --dataset synthetic_demo.h5 --guess s0 --fixed-other 782 \\
+  --component r0 --true-pair 231 782 --plot
+```
+
+Or select `synthetic_demo.h5` in `python GUI.py`, leave Candidate file blank,
+set Guess to `s0`, Known other coefficient to `782`, and Component to `r0`.
+A visible **SYNTHETIC DEMO** warning identifies the generated data.
+The example does not use valid ML-KEM ciphertexts and is not research evidence.
+
 ## HDF5 input contract
 
 A single file needs the following datasets (first dimension: same N traces):
