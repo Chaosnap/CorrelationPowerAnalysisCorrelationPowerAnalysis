@@ -1,179 +1,165 @@
-import sys, getopt, math
+import argparse
+from pathlib import Path
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
+
 from CPA import CPA
+from ToolBox import ToolBox
 
 
-def main(argv):
+def load_matrix(path):
+    path = Path(path)
+    suffix = path.suffix.lower()
 
-    # inputfilename, startpt, endpt = getInputsArgv(argv)
-    inputfilename, startpt, endpt, numTraces = getInputs()
-    print("Processing ", inputfilename, "...")
-    print()
-    pt, ct, tracesPoints = processCSV(inputfilename, startpt, endpt)
-    if numTraces == -1:
-        VisualizeTracesDifferences(pt, ct, tracesPoints)
-    else:
-        VisualizeTracesDifferences(pt, ct, tracesPoints[:numTraces])
+    if suffix == ".npy":
+        return np.load(path)
+    if suffix == ".npz":
+        data = np.load(path)
+        if len(data.files) != 1:
+            raise ValueError("NPZ input must contain exactly one array.")
+        return data[data.files[0]]
+
+    return pd.read_csv(path, header=None).to_numpy()
 
 
-def VisualizeCorrSingle(matrixRelations, byteNo):
+def parse_coefficients(text):
+    result = []
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            lo, hi = part.split("-", 1)
+            result.extend(range(int(lo), int(hi) + 1))
+        else:
+            result.append(int(part))
+    return result
 
-    matrixRelation = matrixRelations[byteNo]
-    fig, axs = plt.subplots(1, 1)
-    axs.stem(matrixRelation)
-    axs.grid()
-    axs.stem([abs(matrixRelation).argmax()], [matrixRelation[abs(matrixRelation).argmax()]], linefmt="C1-",
-             markerfmt="C1o")
 
-    axs.set_xlabel('All possible sub-key guesses')
-    axs.set_ylabel('Correlation Value')
-    plt.title("Correlation plot for byte "+ str(byteNo))
+def plot_result(result):
+    coeff = result["coeff"]
+
+    fig, ax = plt.subplots()
+    ax.plot(result["poi_curve"])
+    ax.axvline(result["global_poi"], linestyle="--")
+    ax.set_xlabel("Sample")
+    ax.set_ylabel("max |Pearson r|")
+    ax.set_title(f"Coefficient {coeff}: POI search")
+    ax.grid()
+    plt.show()
+
+    fig, ax = plt.subplots()
+    relations = result["max_corr_per_guess"]
+    ax.plot(np.arange(len(relations)), np.abs(relations))
+    ax.axvline(result["best_guess"], linestyle="--")
+    ax.set_xlabel("Secret coefficient guess")
+    ax.set_ylabel("max |Pearson r|")
+    ax.set_title(
+        f"Coefficient {coeff}: best={result['best_guess']} "
+        f"(r={result['peak_corr']:.4f})"
+    )
+    ax.grid()
     plt.show()
 
 
-def VisualizeCorrAll(traceSets, matrixRelationMatList, keysize):
-
-    # Will be size of 16
-    ylistContainer = []
-
-    for m in matrixRelationMatList:
-        # ylist will have a shape of (256 by 20)
-        ylist = np.concatenate(m, axis=1)
-        ylistContainer.append(ylist)
-
-    # Plotting
-    numOfRowsPerFig = 4
-    numOfColPerFig = 4
-    numOfPlotsPerFig = numOfRowsPerFig * numOfColPerFig
-    numOfFigReq = math.ceil(keysize / numOfPlotsPerFig)
-    figures = np.empty(shape=numOfFigReq, dtype=object)
-    figIndex = 0
-    plotIndex = 1
-    figures[figIndex] = plt.figure()
-    figures[figIndex].subplots_adjust(hspace=0.7, wspace=0.7)
-
-    for index, ylist in enumerate(ylistContainer):
-
-        if plotIndex > numOfPlotsPerFig:
-            figIndex += 1
-            figures[figIndex] = plt.figure()
-            figures[figIndex].subplots_adjust(hspace=0.7, wspace=0.7)
-            plotIndex = 1
-        ax = figures[figIndex].add_subplot(numOfRowsPerFig, numOfColPerFig, plotIndex)
-        for y in ylist:
-            ax.plot(traceSets, y)
-        ax.set_title('Key byte ' + str(index))
-        ax.set_xlabel('No. of traces')
-        ax.set_ylabel('Correlation Value')
-        plotIndex += 1
-
-    plt.show()
+def build_parser():
+    p = argparse.ArgumentParser(
+        description="Coefficient-level CPA for Kyber / ML-KEM PWM/BaseMul leakage."
+    )
+    p.add_argument("--traces", required=True, help="Trace matrix: CSV, NPY or single-array NPZ.")
+    p.add_argument("--inputs", required=True, help="Public coefficient matrix: CSV, NPY or NPZ.")
+    p.add_argument(
+        "--coeff",
+        default="0",
+        help="Coefficient indices, e.g. 0 or 0,1,2 or 0-9.",
+    )
+    p.add_argument("--previous", help="Previous register values for HD model.")
+    p.add_argument("--model", choices=["HW", "HD"], default="HW")
+    p.add_argument("--q", type=int, default=3329)
+    p.add_argument(
+        "--factor",
+        type=int,
+        default=1,
+        help="Optional multiplicative domain factor. Use 1 for the direct Barrett RTL baseline.",
+    )
+    p.add_argument("--top-n", type=int, default=10)
+    p.add_argument("--chunk", type=int, default=256, help="Number of key guesses per vectorized block.")
+    p.add_argument("--num-traces", type=int, default=0, help="0 means use all traces.")
+    p.add_argument("--sample-start", type=int, default=0)
+    p.add_argument("--sample-end", type=int, default=0, help="0 means use all samples after start.")
+    p.add_argument("--align", action="store_true", help="FFT-align traces before CPA.")
+    p.add_argument("--plot", action="store_true")
+    return p
 
 
-def VisualizeTracesDifferences(pt, ct, tracesPoints):
+def main():
+    args = build_parser().parse_args()
 
-    keysize = 16
-    # print("Range count", (math.floor(len(tracesPoints)/10)*10)+10)
-    traceSets = range(10, (math.floor(len(tracesPoints) / 10) * 10) + 10, 10)
-    cpaObjs = []
-    # Will contain temp 16 sets of 20 (256 by 1) matrices for concat
-    matrixRelationMatList = np.empty(shape=(keysize, len(traceSets)), dtype=object)
+    traces = np.asarray(load_matrix(args.traces), dtype=np.float64)
+    inputs = load_matrix(args.inputs)
 
-    print("Starting CPA procedure with increasing number of traces now...")
+    if traces.ndim == 1:
+        traces = traces[:, None]
+    if inputs.ndim == 1:
+        inputs = inputs[:, None]
 
-    for index1, tracesPointsLen in enumerate(traceSets):
-        print("Working with ", tracesPointsLen, " traces now...")
-        cpa = CPA(keysize)
-        # Set data points
-        cpa.SetTracesPointsAndPT(tracesPoints[:tracesPointsLen], pt[:tracesPointsLen])
-        # Do CPA
-        print("Doing Correlational Power Analysis...")
-        key = cpa.Analyse()
-        print("Key recovered with ", tracesPointsLen, " traces is ", [hex(k) + "|" + chr(k) for k in key])
-        # Size of 16
-        currentMatrixRelations = cpa.GetMatrixRelations()
-        # Populate matrix data for plotting later
-        for index2, eachByteRelation in enumerate(currentMatrixRelations):
-            # Tranpose from 1 x 256 to 256 x1
-            matrixRelationMatList[index2][index1] = (np.array(eachByteRelation).reshape(len(eachByteRelation), 1))
+    if args.num_traces > 0:
+        traces = traces[:args.num_traces]
+        inputs = inputs[:args.num_traces]
 
-        cpaObjs.append(cpa)
+    sample_end = args.sample_end if args.sample_end > 0 else traces.shape[1]
+    traces = traces[:, args.sample_start:sample_end]
 
-    print("Plotting single sub-key byte correlation plot...")
-    VisualizeCorrSingle(cpaObjs[index1].GetMatrixRelations(), 0)
-    VisualizeCorrSingle(cpaObjs[index1].GetMatrixRelations(), 1)
-    print("Plotting all key bytes correlation plot...")
-    VisualizeCorrAll(traceSets, matrixRelationMatList, keysize)
+    if args.align:
+        traces = ToolBox.AlignTracesFFT(traces)
 
+    coeff_indices = parse_coefficients(args.coeff)
 
-def getInputs():
-    defaultCSV = "waveform374samples_327_2047.csv"
-    defaultStart = 327
-    defaultEnd = 2047
-    defaultNumTraces = -1
+    cpa = CPA(
+        keySize=len(coeff_indices),
+        q=args.q,
+        leakage_model=args.model,
+        montgomery_factor=args.factor,
+        top_n=args.top_n,
+        guess_chunk=args.chunk,
+    )
+    cpa.SetTracesPointsAndPT(traces, inputs)
 
-    print("Welcome to Power Analysis Tool!")
-    print("===============================")
-    print()
-    inputfilename = input(
-        "Please enter the name of the waveform file (Press <enter> to use default file): ") or defaultCSV
-    print("File chosen: ", inputfilename)
-    startpt = int(input("Please enter the start index (Press <enter> to use default start index): ") or defaultStart)
-    print("Start index: ", startpt)
-    endpt = int(input("Please enter the end index (Press <enter> to use default end index): ") or defaultEnd)
-    print("End index: ", endpt)
-    numTraces = int(input(
-        "Please enter the max no. of traces to be use for analysis.\nNo. of trace will start from 10 and end at this amount in steps of 10 (Press <enter> to use all traces available in the file): ") or defaultNumTraces)
-    print("No. of traces to use: ", numTraces if numTraces != -1 else 'All')
-    print()
+    if args.model == "HD":
+        if not args.previous:
+            raise SystemExit("--previous is required when --model HD is selected.")
+        previous = load_matrix(args.previous)
+        if args.num_traces > 0:
+            previous = previous[:args.num_traces]
+        cpa.SetPreviousValues(previous)
 
-    return inputfilename, startpt, endpt, numTraces
+    recovered = cpa.Analyse(coeff_indices=coeff_indices)
 
+    print("\n========== ML-KEM CPA RESULTS ==========")
+    for result in cpa.GetResults():
+        print(
+            f"Coeff {result['coeff']:3d}: "
+            f"guess={result['best_guess']:4d}, "
+            f"peak={result['peak_corr']:+.6f}, "
+            f"sample={result['peak_sample']}, "
+            f"global_POI={result['global_poi']}"
+        )
+        print("  Top candidates:")
+        for item in result["top_guesses"]:
+            print(
+                f"    k={item['guess']:4d}  "
+                f"r={item['corr']:+.6f}  "
+                f"sample={item['sample']:5d}  "
+                f"stability={item['stability']}/{len(result['windows'])}"
+            )
 
-def getInputsArgv(argv):
-    if len(argv) < 3 and not ("-h" in argv):
-        print("Wrong command format!")
-        print("Please supply csv file and options. Use -h option for example command.")
-        sys.exit(2)
-    try:
-        opts, args = getopt.getopt(argv, "hi:s:e:", ["ifile=", "startpt=", "endpt="])
-    except getopt.GetoptError:
-        print("Wrong command format!")
-        print("Use -h option for example command")
-        sys.exit(2)
-    for opt, arg in opts:
-        if opt == '-h':
-            print("eg: Main.py -i waveform.csv -s 327 -e 2046 ")
-            sys.exit(2)
-        elif opt in ("-i", "--ifile"):
-            inputfilename = arg
-        elif opt in ("-s", "--startpt"):
-            startpt = arg
-        elif opt in ("-e", "--endpt"):
-            endpt = arg
-    print("Input file is ", inputfilename)
+        if args.plot:
+            plot_result(result)
 
-    return inputfilename, int(startpt), int(endpt)
-
-
-def processCSV(filename, startpt, endpt):
-    # index start at 0 conversion
-    startpt -= 1
-    endpt -= 1
-
-    dframe = pd.read_csv(filename, header=None)
-    dframe = dframe.dropna(axis=1, how='any')  # Cleanup data: Removes anything that's not a number
-    pt = dframe.iloc[:, 0:1]
-    ct = dframe.iloc[:, 1:2]
-    dataTraces = dframe.iloc[:, startpt + 1:endpt]
-    print("First 5 rows of processed data: ")
-    print(dataTraces.head())
-    print()
-
-    return pt.values, ct.values, dataTraces.values
+    print("\nRecovered coefficients:", recovered)
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    main()

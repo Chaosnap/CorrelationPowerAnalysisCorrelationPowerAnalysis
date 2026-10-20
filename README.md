@@ -1,56 +1,109 @@
-# CorrelationPowerAnalysis
-Implementation of a side-channel attack using Correlation Power Analysis with Python 
+# CorrelationPowerAnalysis — ML-KEM / Kyber CPA
 
-## Execute the program as a standalone executable:
+This repository now uses a coefficient-level Correlation Power Analysis model for
+Kyber / ML-KEM instead of the original AES S-box byte model.
 
-The python program is build into a standalone executable which is built and tested on the Microsoft Windows 10 platform. There is no requirement to install any other packages in order to run the executable.
+## Current leakage model
 
-### How to use the executable:
+For a public coefficient `x_j` from trace `j` and a secret coefficient guess
+`k in [0, 3328]`, the default PWM/BaseMul model is:
 
-1. Ensure that the demo waveform file (waveform374samples_327_2047.csv) and the executable file (Main.exe) are in the same directory.
+```text
+intermediate(j, k) = (x_j * k) mod 3329
+leakage(j, k)      = HW(intermediate(j, k))
+```
 
-2. Double click the "Main.exe" executable.
+The CPA engine computes Pearson correlation between every hypothesis and every
+trace sample, reports the strongest Point of Interest (POI), ranks all 3329
+secret-coefficient candidates, and performs a small multi-window stability
+check around the global POI.
 
-3. A terminal will pop up. Please do give it some time to load all the libraries at the back end. It should take around 15 seconds.
+The default multiplicative-domain factor is `1`, which matches a direct
+multiply + Barrett-reduction datapath. A different factor can be supplied for
+implementations whose measured intermediate is in another arithmetic domain.
 
-4. A user interface will be shown as below:
+An HD mode is also available when the previous register value is known:
 
-<img src="https://raw.githubusercontent.com/laiqinghui/CorrelationPowerAnalysis/master/media/InitUI.png" alt="alt text" width="100%" height="400">
-    
-5. The program will now ask for the name of the CSV file that contain the traces. Users may choose to analysis their own set of traces by placing the their own trace file in the same directory as the executable file and provide the name of their own waveform files. However, for this demo, please press enter to proceed with the demo waveform file as that file contains the traces collected during the lab experiment.
+```text
+leakage(j, k) = HD(previous_j, intermediate(j, k))
+```
 
-6. The program will now ask for the start index of the trace file which data will start to be used for processing. Users may also indicate the start of the index of their own waveform files. However, for this demo, please press enter to proceed with the setting for the default waveform file.
+## Files
 
-7. The program will now ask for the end index of the trace file which data are stop to be considered for processing. Users may also indicate the end of the index of their own waveform files. However, for this demo, please press enter to proceed with the setting for the default waveform file.
+- `CPA.py` — ML-KEM coefficient CPA engine; vectorized Pearson correlation,
+  POI detection, top-N candidates and window stability.
+- `ToolBox.py` — Hamming Weight / Hamming Distance helpers and optional FFT
+  trace alignment.
+- `Main.py` — command-line driver for CSV / NPY / single-array NPZ datasets.
 
-8. The program will now ask for the maximum number of traces that will be use for processing (Processing will start from 10 to this specified amount in steps of 10). Users may also indicate the maximum number of traces to be used for analysis in their own waveform files. However, for this demo, please press enter to use all traces available in the trace file.
+## Input format
 
-9. The program will start the processing of data. The sample output of the program will be as such:
+Use two matrices with the same number of rows:
 
-<img src="https://raw.githubusercontent.com/laiqinghui/CorrelationPowerAnalysis/master/media/results.png" alt="alt text" width="100%" height="400">
+- **traces**: `n_traces x n_samples`
+- **inputs**: `n_traces x n_public_coefficients`
 
-Two plots will be produced as well. The details of the results and plots will be discussed in the accompanying report.
+Each input column is the public coefficient associated with one attacked secret
+coefficient. Coefficients should normally be represented canonically modulo
+3329.
 
-<img src="https://raw.githubusercontent.com/laiqinghui/CorrelationPowerAnalysis/master/media/plot1.png" alt="alt text" width="100%" height="500">
+## Example
 
-<img src="https://raw.githubusercontent.com/laiqinghui/CorrelationPowerAnalysis/master/media/plot2.png" alt="alt text" width="100%" height="500">
+```bash
+python Main.py \
+  --traces traces.npy \
+  --inputs public_coeffs.csv \
+  --coeff 0 \
+  --model HW \
+  --plot
+```
 
-## Execute the program from source:
+Attack several coefficients:
 
-The project is built with Python 3.7.1 with Anaconda as the package manager.
+```bash
+python Main.py \
+  --traces traces.npy \
+  --inputs public_coeffs.csv \
+  --coeff 0-9 \
+  --num-traces 5000
+```
 
-Dependencies for this project:
-1) Numpy
-2) Pandas
-2) Matplotlib
+Use the HD model:
 
-### Steps to execute the program from source:
+```bash
+python Main.py \
+  --traces traces.npy \
+  --inputs public_coeffs.csv \
+  --previous previous_register_values.csv \
+  --coeff 0 \
+  --model HD
+```
 
-1) Install Anaconda 3.7 or install Python 3.7.1 along with the necessary packages required as stated above.
-2) Clone this repository
-3) Execute the python script by opening cmd in Windows or terminal in Linux and keying in:
+## Why this replaced the old model
 
-    cd 'root directory of the repo'
+The previous project implemented classic AES CPA:
 
-    python Main.py
+```text
+HW(Sbox(plaintext_byte XOR key_byte))
+```
 
+with 256 byte hypotheses. That model is not appropriate for the current
+ML-KEM PWM/BaseMul target. ML-KEM uses arithmetic modulo `q = 3329`, so the
+attack now evaluates 3329 coefficient hypotheses and models the modular
+multiplication intermediate directly.
+
+## Research references used for design comparison
+
+The implementation is original to this repository, but its workflow was
+cross-checked against these public research/code resources:
+
+- `anshupriyan/My-CPA-code-analysis` — coefficient-wise Kyber CPA, HW model,
+  POI/window analysis and vectorized correlation ideas.
+- `PRASANNA-RAVI/Generic-SCA-CCA-Lattice-Schemes` — chosen-ciphertext SCA,
+  trace-acquisition synchronization and coefficient-recovery experiment flow.
+- `Chaman-veteran/KyberCPA` — Cortex-M4 / ChipWhisperer trace-acquisition and
+  host communication workflow.
+
+The first repository is the closest reference for the numerical CPA engine.
+The latter two are more useful for acquisition/protocol design than for the
+Artix-7 leakage model itself.
