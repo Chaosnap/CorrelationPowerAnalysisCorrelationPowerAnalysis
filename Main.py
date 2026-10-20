@@ -147,6 +147,8 @@ def main():
         component=args.component, start=args.start, stop=args.stop,
         max_traces=args.max_traces, word_bits=args.word_bits,
         zeta_override=args.zeta, true_pair=args.true_pair)
+    if result["synthetic"]:
+        print("SYNTHETIC DATASET — not real FPGA key recovery")
     print(f"HD-CPA on {result['trace_count']} traces, BaseMul {result['component']}")
     print(f"Best pair: {result['best_pair']}; peak |rho|: {result['best_score']:.5f}; "
           f"sample: {result['best_sample_absolute']}")
